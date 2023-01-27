@@ -1,0 +1,1107 @@
+---
+output:
+  html_document:
+    df_print: paged
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+# DATA SCIENCE PROJECT - SPACESHIP TITANIC
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+## this chucnk is for options and importing of libraries
+options(warn=-1)
+options(avvertimento=-1)
+library(leaps)
+library(imputeMissings)
+library(caTools)
+library(ROCR)
+library(glmnet)
+library(caret)
+library(randomForest)
+library(gbm)
+library(vcd)
+library(car)
+library(tree)
+```
+
+This is the notebook developed for the course of Data Science for Economics and Finance by Dario Cagetti (0000918366), Giuseppe Difazio(0000918394), Manuel Rech (0000914421) e Michele Vagnetti (0000918419).
+
+## Introduction
+
+Welcome to the year 2912.
+We've received a transmission from four lightyears away and things aren't looking good.
+The Spaceship Titanic was an interstellar passenger liner launched a month ago.
+With almost 13,000 passengers on board, the vessel set out on its maiden voyage transporting emigrants from our solar system to three newly habitable exoplanets orbiting nearby stars.
+While rounding Alpha Centauri en route to its first destination---the torrid 55 Cancri E---the unwary Spaceship Titanic collided with a spacetime anomaly hidden within a dust cloud.
+Sadly, it met a similar fate as its namesake from 1000 years before.
+Though the ship stayed intact, almost half of the passengers were transported to an alternate dimension!
+In this competition, your task is to predict whether a passenger was transported to an alternate dimension during the Spaceship Titanic's collision with the spacetime anomaly.
+To help you make these predictions, you're given a set of personal records recovered from the ship's damaged computer system
+
+-   train.csv - Personal records for about two-thirds (\~8700) of the passengers, to be used as training data.
+    -   PassengerId - A unique Id for each passenger. Each Id takes the form gggg_pp where gggg indicates a group the passenger is travelling with and pp is their number within the group. People in a group are often family members, but not always.
+    -   HomePlanet - The planet the passenger departed from, typically their planet of permanent residence.
+    -   CryoSleep - Indicates whether the passenger elected to be put into suspended animation for the duration of the voyage. Passengers in cryosleep are confined to their cabins.
+    -   Cabin - The cabin number where the passenger is staying. Takes the form deck/num/side, where side can be either P for Port or S for Starboard.
+    -   Destination - The planet the passenger will be debarking to.
+    -   Age - The age of the passenger.
+    -   VIP - Whether the passenger has paid for special VIP service during the voyage.
+    -   RoomService, FoodCourt, ShoppingMall, Spa, VRDeck - Amount the passenger has billed at each of the Spaceship Titanic's many luxury amenities.
+    -   Name - The first and last names of the passenger.
+    -   Transported - Whether the passenger was transported to another dimension. This is the target, the column you are trying to predict.
+-   test.csv - Personal records for the remaining one-third (\~4300) of the passengers, to be used as test data. The task is to predict the value of Transported for the passengers in this set.
+
+The dataset we have decided to use is derived from a Kaggle competition
+
+```{r echo=FALSE}
+setwd("/Users/manuel/Desktop/Data Science for Economics and Finance/spaceship-titanic")
+train_df = read.csv("possilbe_datasets/train.csv", header = TRUE, na.strings = '')
+head(train_df)
+```
+
+## Graphing
+
+```{r}
+train_df$HomePlanet = as.factor(train_df$HomePlanet)
+train_df$CryoSleep = as.factor(train_df$CryoSleep)
+train_df$Destination = as.factor(train_df$Destination)
+train_df$VIP = as.factor(train_df$VIP)
+train_df$Name = as.factor(train_df$Name)
+train_df$Transported = as.factor(train_df$Transported)
+```
+
+Let's start to grasp an idea of what some dependencies in our dataset.
+We start out with a mosaic plot using the predictors `HomePlanet` and `CryoSleep`.
+
+### Categorical
+
+```{r echo=FALSE}
+par(mfrow=c(1,3)) 
+tbl <- xtabs(~CryoSleep + Transported, train_df)
+mosaic(tbl, shade = TRUE, legend = TRUE, labeling_args = list(abbreviate_labs = c(5, 6)))
+
+```
+
+This charts shows the number of transported and non-transported as a function of the various predictors.
+Take the chart with CryoSleep against Transported, it can give us an intuition in two ways:
+
+-   looking at the boxes size -\> we see that if CryoSleep was `True` much more passengers were transported rather than not transported.
+    On the contrary if it was `False` much more people were not transported rather than transported.
+
+-   looking at the chart colors -\> transparent blocks refers to independence, while **blue** colors state that 'there are more occurrences in this class with respect to the independent case' and red 'there are less occurrences in this class with respect to the independent case'.
+    Therefore, the more intense is the color of the boxes, the more dependence there is between that variable and the outcome `Transported`
+
+The same intuition can be developed also with the other categorical variables
+
+```{r fig.width=4, fig.height=4, fig.show='hold', echo=FALSE}
+par(mfrow=c(1,2)) 
+print(unique(train_df$Destination))
+tbl1 <- xtabs(~HomePlanet + Transported, train_df)
+mosaic(tbl1, shade = TRUE, legend = TRUE, labeling_args = list(abbreviate_labs = c(6, 6)))
+
+tbl2 <- xtabs(~Destination + Transported, train_df)
+mosaic(tbl2, shade = TRUE, legend = TRUE, labeling_args = list(abbreviate_labs = c(1, 6)))
+```
+
+### Numerical
+
+To grab some intuition on how the raw variables look like, here is the summary of the summary of the numeric predictors.
+
+```{r echo=FALSE}
+numeric_cols <- unlist(lapply(train_df, is.numeric)) # getting  numeric cols
+summary(train_df[ , numeric_cols])
+```
+
+```{r echo=FALSE, fig.width=4, fig.height=4, fig.align='center'}
+library(tidyverse)
+#densityPlot(train_df$Age, train_df$Transported, xlab = 'Age', legend = c(title = 'Transported'))
+train_df %>% 
+  ggplot( aes(x=Transported, y=Age, fill=Transported)) + 
+  geom_violin(draw_quantiles = c(0.25, 0.5, 0.75))
+```
+
+By looking at this graph we can notice that people older than 30 y.o.
+have been transported with pretty much the same distribution.
+Before that level we can highlight how people in their twenties has been sacrificed, probably to help younger and older ones.
+Indeed, we can also see how different the distribution for minor than 10/15 y.o.
+is, here we have a lot more people of this age transported.
+
+```{r echo=FALSE, fig.width=4, fig.height=4}
+#densityPlot(train_df$Spa, train_df$Transported, xlab = 'Spa', legend = c(title = 'Transported'), xlim = c(0, 1000))
+#densityPlot(train_df$RoomService, train_df$Transported, xlab = 'Room Service', legend = c(title = 'Transported'), xlim = c(0, 1000))
+train_df %>% 
+  ggplot( aes(x=Transported, y=Spa, fill=Transported)) + 
+  geom_violin(draw_quantiles = c(0.25, 0.5, 0.75)) + 
+  ylim(0,1000)
+train_df %>% 
+  ggplot( aes(x=Transported, y=RoomService, fill=Transported)) + 
+  geom_violin(draw_quantiles = c(0.25, 0.5, 0.75)) + 
+  ylim(0,1000)
+```
+
+In both violin plots we can see almost the same behaviour.
+Not much differences between non-transported and transported with the orange observations being a bit thicker above about 50.
+This means that not a lot of passengers spent a lot in these plus services and also that spending more did not ensure you a preferential treatment when the accident has occurred.
+
+```{r echo=FALSE, fig.width=4, fig.height=4, fig.align='center'}
+#densityPlot(train_df$VRDeck, train_df$Transported, xlab = 'VR Deck', legend = c(title = 'Transported'), xlim = c(0, 1000))
+train_df %>% 
+  ggplot( aes(x=Transported, y=VRDeck, fill=Transported)) + 
+  geom_violin(draw_quantiles = c(0.25, 0.5, 0.75)) + 
+  ylim(0,1000)
+```
+
+Here we can notice a few things.
+First that among all the people that spent less than 30 in the VRDeck services the majority was not transported.
+In contrast, also here we can see a thicker orange values above 50 meaning that not a lot of passengers spent a lot on this service and that, again, spending more did not means a better treatment in case of casualty.
+
+```{r echo=FALSE, fig.width=4, fig.height=4}
+#densityPlot(train_df$FoodCourt, train_df$Transported, xlab = 'Food Court', legend = c(title = 'Transported'), xlim = c(0, 1000))
+#densityPlot(train_df$ShoppingMall, train_df$Transported, xlab = 'Shopping Mall', legend = c(title = 'Transported'), xlim = c(0, 1000))
+
+train_df %>% 
+  ggplot( aes(x=Transported, y=FoodCourt, fill=Transported)) + 
+  geom_violin(draw_quantiles = c(0.25, 0.5, 0.75)) + 
+  ylim(0,1000)
+train_df %>% 
+  ggplot( aes(x=Transported, y=ShoppingMall, fill=Transported)) + 
+  geom_violin(draw_quantiles = c(0.25, 0.5, 0.75)
+              ) + 
+  ylim(0,1000)
+```
+
+As in the previous case also here we can observe a similar distribution in both the plots.
+Anyway, unlike before we have a different pattern.
+Passengers that spent very little has hardly been transported, indeed people that spent, not a lot, but a discrete sum on those services, have more probability of being transported.
+For the third time we can spot a thicker orange values after the most of the observations meaning, again, that not a lot of passengers spent a lot on these services and that spending more did not means a better treatment in case of casualty.
+
+## Data pre-processing
+
+To start out let's see how the initial dataset looks like.
+
+```{r}
+head(train_df)
+```
+
+### Features engineering
+
+Seeing from the information reported about the variables, we can notice that two columns, `PassengerId` and `Cabin` hide some information that may be exploited by creating multiple columns.
+
+Firstly we split `PassengerId`, built up as 'gggg_pp'
+
+```{r}
+head(train_df$PassengerId)
+```
+
+-   `group` is the 'gggg' part, and references to the group they belong to, think of a family as a group
+
+-   `number_within_group` is the 'pp' part and makes reference to the number within the group these people take
+
+Secondly, we split the `Cabin` column, built as 'deck/num/side',
+
+```{r}
+head(train_df$Cabin)
+```
+
+-   `side` can be either P for Port or S for Starboard
+
+-   `deck` references to the position on the ship
+
+-   `num` is another futher categorization of the place took for travelling
+
+```{python include=FALSE}
+import pandas as pd
+import os
+folder_path = os.getcwd()
+train_df = pd.read_csv(folder_path+'/possilbe_datasets/train.csv')
+test_df = pd.read_csv(folder_path+'/possilbe_datasets/test.csv')
+
+train_df[['deck', 'num','side']] = train_df['Cabin'].str.split('/', expand=True)
+test_df[['deck', 'num','side']] = test_df['Cabin'].str.split('/', expand=True)
+train_df.drop('Cabin',axis=1,inplace=True)
+test_df.drop('Cabin',axis=1,inplace=True)
+train_df[['gruop', 'number_within_group']] = train_df['PassengerId'].str.split('_', expand=True)
+test_df[['gruop', 'number_within_group']] = test_df['PassengerId'].str.split('_', expand=True)
+train_df.drop('PassengerId',axis=1,inplace=True)
+test_df.drop('PassengerId',axis=1,inplace=True)
+
+train_df.to_csv('possilbe_datasets/train_df_with_missing.csv', index=False)
+test_df.to_csv('possilbe_datasets/test_df_with_missing.csv', index=False)
+```
+
+```{r echo=FALSE}
+setwd("/Users/manuel/Desktop/Data Science for Economics and Finance/spaceship-titanic")
+train_df = read.csv("possilbe_datasets/train_df_with_missing.csv", header = TRUE, na.strings = '')
+test_df = read.csv("possilbe_datasets/test_df_with_missing.csv", header = TRUE, na.strings = '')
+head(train_df)
+```
+
+Let's graph the mosaic plot also for these three newly created variables
+
+```{r echo=FALSE}
+tbl3 <- xtabs(~deck + Transported, train_df)
+mosaic(tbl3, shade = TRUE, legend = TRUE, labeling_args = list(abbreviate_labs = c(5, 6)))
+
+tbl4 <- xtabs(~side + Transported, train_df)
+mosaic(tbl4, shade = TRUE, legend = TRUE, labeling_args = list(abbreviate_labs = c(5, 6)))
+
+tbl5 <- xtabs(~number_within_group + Transported, train_df)
+mosaic(tbl5, shade = TRUE, legend = TRUE, labeling_args = list(abbreviate_labs = c(5, 6)))
+```
+
+### Elimination of irrelevant variables
+
+The datasets, after pre-processing are loaded into the R environment and as the categorical variables as themselves are just a list of characters, it is appropriate to convert them into factors.
+However, some factor present levels that are too many, sometimes almost as many as the rows.
+
+As intuition suggests the variable `Name` may be irrelevant for prediction of a passenger to be transported, indeed it has 8473 levels, on a dataset with 8693 observations.
+For this reason we drop it.
+
+A similar reasoning is done with the variables `Num` with 1817 levels, derived from the old variable `Cabin` (that was decomposed as `Deck`/`Num`/`Side`).
+Notice that `Deck` has 2 levels and `Side` 2 instead.
+
+Also the variable `Group` with 6217 levels is dropped.
+This was derived from the `Passenger_id` variable, and divided into `Group` and `number_within_group`, the latter with 8 levels
+
+```{r include=FALSE}
+train_df$HomePlanet = as.factor(train_df$HomePlanet)
+train_df$CryoSleep = as.factor(train_df$CryoSleep)
+train_df$Destination = as.factor(train_df$Destination)
+train_df$VIP = as.factor(train_df$VIP)
+train_df$Name = as.factor(train_df$Name)
+train_df$Name = NULL
+train_df$Transported = as.factor(train_df$Transported)
+train_df$deck = as.factor(train_df$deck)
+train_df$num = as.factor(train_df$num)
+train_df$num = NULL
+train_df$side = as.factor(train_df$side)
+train_df$gruop = as.factor(train_df$gruop)
+train_df$gruop = NULL
+train_df$number_within_group = as.factor(train_df$number_within_group)
+
+test_df$HomePlanet = as.factor(test_df$HomePlanet)
+test_df$CryoSleep = as.factor(test_df$CryoSleep)
+test_df$Destination = as.factor(test_df$Destination)
+test_df$VIP = as.factor(test_df$VIP)
+test_df$Name = as.factor(test_df$Name)
+test_df$Name = NULL
+test_df$deck = as.factor(test_df$deck)
+test_df$num = as.factor(test_df$num)
+test_df$num = NULL
+test_df$side = as.factor(test_df$side)
+test_df$gruop = as.factor(test_df$gruop)
+test_df$gruop = NULL
+test_df$number_within_group = as.factor(test_df$number_within_group)  
+length(levels(train_df$number_within_group))
+```
+
+### Handling missing values
+
+After, this preliminary manual selection of the predictors, we want to count and take care of the missing values appropriately.
+This is how many NA values we have per variable
+
+```{r echo=FALSE}
+print('train dataframe missing values')
+how_many_missing_values_per_col_train = colSums(is.na(train_df))
+how_many_missing_values_per_col_train
+print('test dataframe missing values')
+how_many_missing_values_per_col_test = colSums(is.na(test_df))
+how_many_missing_values_per_col_test
+```
+
+Now, using the library `ImputeMissing` we substitute the missing values using the following criteria:
+
+-   median for numerical variables
+
+-   mode for categorical variables
+
+```{r echo=FALSE}
+train_df = impute(data=train_df, object = NULL, method = "median/mode", flag = FALSE)
+print('train dataframe missing values after imputation')
+how_many_missing_values_per_col_train = colSums(is.na(train_df))
+how_many_missing_values_per_col_train
+test_df = impute(data=test_df, object = NULL, method = "median/mode", flag = FALSE)
+print('test dataframe values after imputation')
+how_many_missing_values_per_col_test = colSums(is.na(test_df))
+how_many_missing_values_per_col_test
+```
+
+### Scaling the data
+
+```{r echo=FALSE}
+numeric_cols_train <- unlist(lapply(train_df, is.numeric)) # getting  numeric cols
+numeric_cols_test <- unlist(lapply(test_df, is.numeric)) # getting  numeric cols
+summary(train_df[ , numeric_cols_train])
+```
+
+Here we can see the numeric predictors for this dataset: there are 5 predictors regarding expenses done by passengers in the spaceship, and 1 predictor indicating the age of the passengers.
+As the range of values that these predictors take is not the same and nor is the mean, we proceed with scaling these predictors in order to reach mean = 0 and standard deviation equal to 1
+
+```{r}
+train_df[ , numeric_cols_train] = scale(train_df[, numeric_cols_train])
+test_df[ , numeric_cols_test] = scale(test_df[, numeric_cols_test])
+summary(train_df[, numeric_cols_train])
+```
+
+### Train set/validation set creation
+
+Now, the dataset has been processed and now we are ready to try some machine learning models to understand which is the best one to make predictions onto unknown data
+
+```{r echo=FALSE}
+set.seed(1)
+train.label = sample.split(train_df$Transported, SplitRatio = 3/5)
+train_set = train_df[train.label,]
+validation_set = train_df[!train.label,]
+
+cat('The mean of transported in train_set is', mean(as.numeric(train_set$Transported)-1), ' while the mean of transported in validation_set is', mean(as.numeric(validation_set$Transported)-1), ', so the division seems to be done evenly')
+```
+
+```{r}
+head(train_df)
+```
+
+## Subset selection
+
+Now, we know we have a classification problem, not a regression, so using methods as BSS, FSS, BSS is not the best choice, however, this can give a sense of what variables may be more relevant.
+As we'll see some of the findings found here are in line with predictions done by other classifiers.
+
+We are using the library `Leaps` for this simple regression and the choice of selection models falls into the FSS.
+This is because Forward, Backwards and Best Subset Selection yield a very similar result, and therefore we choose the model that is less computational expensive, for optimization
+
+### Linear Regression
+
+As we know from theory, when we fit a linear regression model, we minimize the Residual Sum of Squares of the training set and consequently the Mean Squared Error (that is, MSE = RSS/n).
+However, as we care about model accuracy, therefore the ability of this regression of fitting unseen data, we do not pay too much attention on the training MSE tends, we prefer instead the test MSE.
+The latter usually is underestimated by the prior (training MSE is monotonically decreasing while test MSE is u-shaped on the axis MSE, flexibility) and therefore we use some different approaches to estimate the test MSE: Mallow's C~p~, Bayesian Information Criteria and the adjusted R^2^ coefficient.
+
+We are not going into details of the meaning of these methods, but it is sufficient to state that, after we performed the same steps with the different methods, we ended up having very very similar results, therefore we only show here results for C~p~ criterion.
+
+```{r}
+## model estimation
+forward_subset_selection = regsubsets(Transported ~ ., data = train_set, nvmax = 27, method = "forward")
+
+```
+
+```{r echo=FALSE}
+## plotting the optimal number of variables
+summary_fss = summary(forward_subset_selection)
+cp_min = which.min(summary_fss$cp)
+plot(summary_fss$cp, xlab = "Number of Variables (OH-encoded)", ylab = "Cp")
+points(cp_min, summary_fss$cp[cp_min], pch = 20, col = "red",cex=2)
+
+## plotting the Subset Selection as a function of the Mallow's Cp and the number of variables
+plot(forward_subset_selection, scale = "Cp") 
+
+```
+
+### Logistic regression
+
+However, as we have a classification task it's more proper to use a logistic regression instead of a classification one.
+Furthermore, we also perform some subset selection using the function `step`, that by default is doing a backward step-wise selection
+
+```{r}
+set.seed(1)
+logistic = glm(Transported ~ ., data=train_set, family = binomial())
+
+bestlogit <- step(logistic, trace = FALSE)
+
+bestlogit$anova
+```
+
+The call `anova` on the bestlogic moduel states that the predictors 'VIP' and 'number within group' are not relevant for the classification and therefore are omitted from the optimal model estimated
+
+```{r}
+summary(bestlogit)
+```
+
+also, as we can see from this summary, the deck predictor is encoded in its levels minus 1 to avoid collinearity.
+However the groups G, T and E estimates are not considered very significant.
+To exploit all the predictive power of the model, let's make an attempt to join these three levels in the factor 'deck' and re-estimate the model.
+
+The level EGT comprises the three levels E, G and T now.
+
+```{r include=FALSE}
+levels(train_set$deck)
+train_set_logistic = train_set
+validation_set_logistic = validation_set
+levels(train_set_logistic$deck) = c('A', 'B', 'C', 'D', 'F','EGT', 'EGT', 'EGT', 'EGT')
+levels(train_set_logistic$deck)
+
+levels(validation_set$deck)
+levels(validation_set_logistic$deck) = c('A', 'B', 'C', 'D', 'F','EGT', 'EGT', 'EGT', 'EGT')
+levels(validation_set_logistic$deck)
+```
+
+```{r}
+set.seed(1)
+logistic2 = glm(Transported ~ ., data=train_set_logistic, family = binomial())
+
+bestlogit2 <- step(logistic2,  trace = FALSE)
+
+summary(bestlogit2)
+```
+
+```{r}
+bestlogit2$anova
+```
+
+Also, by calling again the anova function on the bestlogit2 module, we see that the same two predictors are eliminated, therefore we can assume that, using these criteria we have reached an optimum for the logistic regression
+
+```{r echo=FALSE}
+pred.logistic = predict(logistic2, validation_set_logistic, type = 'response')
+predob.logistic = prediction(pred.logistic, validation_set_logistic$Transported)
+perf = performance(predob.logistic, "tpr", "fpr")
+plot(perf, main = "Logistic", colorize = TRUE)
+cat("Logistic AUC: ", as.numeric(performance(predob.logistic, "auc")@y.values))
+```
+
+## Shrinkage methods
+
+Given that subset selection generally led to over-fitting data, let assess the performance of new models based on regularization methods, which reduce variance by adding a penalty function.
+
+In order to fit our model using Ridge, Lasso and Elastic Net models we need to create four matrixes, two for x-values and y-values respectively, that contains observation of the train and the test test, which has been splitted randomly using stratified sampling technique.
+
+```{r}
+set.seed(1)
+X = model.matrix(Transported ~ . -1, data = train_df) 
+y = train_df$Transported
+
+set.seed(1)
+train.label = sample.split(train_df$Transported, SplitRatio = 3/5)
+X.train = X[train.label, ] 
+y.train = y[train.label]  
+X.test = X[-train.label, ]
+y.test = y[-train.label]
+
+y.train = as.numeric(y.train) -1 
+y.test = as.numeric(y.test) - 1
+```
+
+Regularization methods minimize the RSS plus penalty parameter that it is called shrinkage penalty, which has the effect of shrinking the estimates of the model's parameters towards zero.
+The amount of penalty is tuned by the parameter lamba that can assume any values in the range [0,+∞), where 0 represent the case when the outcome is exactly equal to a OLS regression and +∞ the case when there is only the intercept in the model, that is the mean value of the response.
+
+### Ridge
+
+We are using the elastic net formulation of the penalty function which weigh the lasso and the ridge penalties by coefficients α and (1-α), respectively.
+Thus, to have a ridge regression we put α equal to 0.
+
+Unlike OLS, ridge regression creates different estimates of the parameters depending on the value of lambda, thus, we need to cross-validate its value to chose the best model.
+
+```{r}
+set.seed(1)
+cv.ridge = cv.glmnet(X.train, y.train, alpha = 0, family=binomial()) 
+# alpha = 0 is for Ridge, alpha = 1 is for Lasso
+
+plot(cv.ridge)
+coef(cv.ridge)
+```
+
+Given the bias-variance trade-off we select the best model under the one-standard error rule, basically selecting not the absolute best model but that that is within one-standard deviation from it.
+
+```{r echo=FALSE}
+set.seed(1)
+pred.ridge = predict(cv.ridge, X.test, s = cv.ridge$lambda.1se)
+predob.ridge = prediction(pred.ridge,y.test)
+perf = performance(predob.ridge, "tpr", "fpr")
+plot(perf, main = "Ridge", colorize = TRUE)
+
+cat("Ridge: ", as.numeric(performance(predob.ridge, "auc")@y.values))
+```
+
+### Lasso
+
+The Lasso regression is computed selecting α = 1, which is the standard default option in glmnet.
+Unlike Ridge, Lasso performs variables selection, which means that the coefficients estimate of some insignificant variables is exactly zero.
+Thus, providing a sparse model Lasso regression improves the interpretability of the model over the Ridge one, even though this not means that it is necessarily better in predicting data.
+
+```{r}
+set.seed(1)
+cv.lasso = cv.glmnet(X.train, y.train, family=binomial())
+plot(cv.lasso)
+coef(cv.lasso)
+```
+
+For the bias-variance trade-off we select the best model under the one-standard error rule.
+As it is possible to see in the graph, this not only decreases the variance of the model but also allow us to simplify the model using "just" 18 variables rather than 23, improving the overall interpretability.
+
+```{r echo=FALSE}
+set.seed(1)
+pred.lasso = predict(cv.lasso, X.test, s = cv.lasso$lambda.1se)
+predob.lasso = prediction(pred.lasso,y.test)
+perf.lasso = performance(predob.lasso, "tpr", "fpr")
+plot(perf.lasso, main = "lasso", colorize = TRUE)
+
+cat("Lasso: ", as.numeric(performance(predob.lasso, "auc")@y.values))
+```
+
+### Elastic net
+
+The elastic net regression is performed assigning α a value in the range (0,1) and in this case we chose the mean value α = 0.5, even though a much coherent analysis should perform a cross-validation of the parameter α, to find the best model.
+
+```{r}
+set.seed(1)
+cv.elnet = cv.glmnet(X.train, y.train, alpha = 0.5, family = binomial())
+plot(cv.elnet)
+coef(cv.elnet)
+
+```
+
+Following the same approach, we used the one-standard error rule.
+As it is possible to see from the graph, elastic net has some variables selection properties and it allows to decrease the variables in the model from 25 to 21, even though, as expected, it perform slightly worse than Lasso, which can eliminate three more variables.
+
+```{r echo=FALSE}
+pred.elastic_net = predict(cv.elnet, X.test, s = cv.elnet$lambda.1se)
+predob.elastic_net = prediction(pred.elastic_net,y.test)
+perf.elastic_net = performance(predob.elastic_net, "tpr", "fpr")
+plot(perf.elastic_net, main = "Elastic net alpha 0.5", colorize = TRUE)
+
+cat("Elastic net alpha 0.5: ", as.numeric(performance(predob.elastic_net, "auc")@y.values))
+```
+
+## Tree methods
+
+### Single tree
+
+In order to enter into tree-based method, we plot the simplest case: the single tree.
+
+```{r}
+set.seed(1)
+tree.train = tree(Transported ~ ., train_set)
+plot(tree.train)
+text(tree.train, pretty = 0)
+tree.pred = predict(tree.train, validation_set, type = "vector")
+
+# cv.tree.train = cv.tree(tree.train, FUN = prune.misclass)
+# 
+# plot(cv.tree.train$size, cv.tree.train$dev,
+#      type = 'b', pch = 19, col = 'red',
+#      xlab = 'Tree size', ylab = 'missclassification')
+# 
+# prune.train = prune.tree(tree.train, best = 8)
+# plot(prune.train)
+# text(prune.train, pretty = 0)
+
+
+```
+
+```{r echo=FALSE}
+predob = prediction(tree.pred[, 2], 
+                    validation_set$Transported)
+perf = performance(predob, "tpr", "fpr")
+plot(perf, main = "Pruned Tree", colorize = TRUE)
+as.numeric(performance(predob, "auc")@y.values)
+```
+
+However, estimates for this methods will never perform as well as the Random Forest, which is an ensemble method using many of these trees.
+
+### Random Forest
+
+Using the library `randomForest` we estimate a random forest predictor using the default value of 500 trees and as the documentation says, the rounded down to integer value of the square root of number of columns, that is: 3.7 rounded to 3.
+As we'll see this is already quite an optimal result
+
+```{r}
+set.seed(1)
+#sqrt(ncol(train_set))
+rf = randomForest(Transported ~ ., data = train_set)
+rf
+```
+
+Now we want to fine tune the number of variables used in each of the tree in the Random Forest predictor, and for this scope we may use a function called `tuneRF` in the library `randomForest` but we think that is not very robust as it may lead to some misleading local optimum result.
+
+We proceed instead by estimating as many random forest models as the predictors, changing the mtry at every iteration.
+By graphing this, we pick the mtry (number of predictors) that is bounded with the lowest out-of-bag error and/or test error.
+
+```{r echo=FALSE}
+set.seed(1)
+oob.err = double(13)
+test.err = double(13)
+for (mtry in 1:13) {
+  rf.m = randomForest(Transported ~ .,
+                      data = train_set,
+                      mtry = mtry,
+                      ntree = 500,
+                      na.action = na.roughfix
+                      )
+  oob.err[mtry] = rf.m$err.rate[500,1]
+  pred = predict(rf.m, validation_set)
+  test.err[mtry] = with(validation_set,
+                        mean(Transported != pred))
+}
+{matplot(1:mtry, cbind(test.err, oob.err), pch = 19,
+        col = c("red", "blue"), type = "b",
+        ylab = "Test Error")
+legend("topright", legend = c("OOB","Test"),
+       pch = 19, col = c("red","blue"))}
+```
+
+As we can see `mtry = 2` is the optimal value, let's estimate now the best random forest
+
+```{r}
+set.seed(1)
+rf2 = randomForest(Transported ~ ., data = train_set, mtry = 2, ntree = 500)
+rf2
+```
+
+And also the chart of the most important variables using the Mean Decrease in the Gini index criterion.
+
+```{r echo=FALSE}
+varImpPlot(rf2) 
+```
+
+This instead is the ROC curve for this Random Forest
+
+```{r echo=FALSE}
+rf.probs = predict(rf, validation_set, type = "prob")[, 2]
+predob.rf = prediction(rf.probs, validation_set$Transported)
+perf.rf = performance(predob.rf, "tpr", "fpr")
+plot(perf.rf, main = "Random Forest, m = 3", colorize = TRUE)
+```
+
+with an accuracy of
+
+```{r echo=FALSE}
+cat("RandomForest (m = 3): ", as.numeric(performance(predob.rf, "auc")@y.values))
+```
+
+```{r echo=FALSE}
+rf.probs = predict(rf2, validation_set, type = "prob")[, 2]
+predob.rf = prediction(rf.probs, validation_set$Transported)
+perf.rf = performance(predob.rf, "tpr", "fpr")
+plot(perf.rf, main = "Random Forest, m = 2", colorize = TRUE)
+```
+
+```{r echo=FALSE}
+cat("RandomForest (m = 2): ", as.numeric(performance(predob.rf, "auc")@y.values))
+```
+
+### Bagging
+
+Still in the tree based methods, we can use a bagging algorithm.
+This follows the same logic as the random forest classifier, with the only difference of the number of variables taken to estimate each tree in the forest.
+In this case it is the maximum number of predictors
+
+```{r}
+set.seed(1)
+bagging = randomForest(Transported ~ ., data = train_set, mtry = 13, ntree = 500)
+```
+
+Let's plot now the ROC curves for this models
+
+```{r echo=FALSE}
+bagg.probs = predict(bagging, validation_set, type = "prob")[, 2]
+predob.bagg = prediction(bagg.probs, validation_set$Transported)
+perf.bagg = performance(predob.bagg, "tpr", "fpr")
+plot(perf.bagg, main = "Bagging, m = 13", colorize = TRUE)
+
+```
+
+Let's take a look at the Area Under Curve for these two models
+
+```{r echo=FALSE}
+cat(" Bagging      (m = 8): ", 
+    as.numeric(performance(predob.bagg, "auc")@y.values))
+```
+
+### Boosting
+
+Now let's implement a boosting algorithm.
+This is another ensemble method of many trees that, differently from Random Forests and Bagging, it learns slowly.
+Trees indeed have very few terminal nodes and each subsequent tree is built on the previous, in order to always improve the estimating power of the tree in areas where it is not performing well.
+
+```{r include=FALSE}
+## binary variables
+train_set$CryoSleep <- ifelse(train_set$CryoSleep == "True",1,0)
+validation_set$CryoSleep <- ifelse(validation_set$CryoSleep == "True",1,0)
+test_df$CryoSleep <- ifelse(test_df$CryoSleep == "True",1,0)
+
+train_set$VIP <- ifelse(train_set$VIP == "True",1,0)
+validation_set$VIP <- ifelse(validation_set$VIP == "True",1,0)
+test_df$VIP <- ifelse(test_df$VIP == "True",1,0)
+
+train_set$Transported <- ifelse(train_set$Transported == "True",1,0)
+validation_set$Transported <- ifelse(validation_set$Transported == "True",1,0)
+
+train_set$side <- ifelse(train_set$side == "P",1,0)
+validation_set$side <- ifelse(validation_set$side == "P",1,0)
+test_df$side <- ifelse(test_df$side == "P",1,0)
+```
+
+Using the parameter `cv` in the `gbm` function, we can perform a cross validation to select the optimal number of trees to be estimated in order to have better predictive ability
+
+```{r}
+set.seed(1)
+cv.boost.train = gbm(Transported ~ ., 
+                     data = train_set, 
+                     distribution = 'bernoulli', 
+                     n.trees = 10000, 
+                     shrinkage = 0.01, 
+                     interaction.depth = 2,
+                     cv.folds = 10,
+                     n.cores = 2)
+
+# set.seed(1)
+# cv.boost.train1 = gbm(Transported ~ ., 
+#                      data = train_set, 
+#                      distribution = 'bernoulli', 
+#                      n.trees = 10000, 
+#                      shrinkage = 0.01, 
+#                      interaction.depth = 1,
+#                      cv.folds = 10,
+#                      n.cores = 2)
+
+best.iter = gbm.perf(cv.boost.train, method = "cv")
+# best.iter1 = gbm.perf(cv.boost.train1, method = "cv")
+legend("topright", legend = c("Train","Validation"), 
+       pch = 19, col = c("black","Yellow"))
+cat('The optimal numer of trees is: ', best.iter)
+```
+
+We now fit the boosting algorithm using this number of trees
+
+```{r}
+set.seed(1)
+best.boost.train = gbm(Transported ~ ., 
+                       data = train_set, 
+                       distribution = 'bernoulli', 
+                       n.trees = best.iter, 
+                       interaction.depth = 2,
+                       shrinkage = 0.01)
+# best.boost.train1 = gbm(Transported ~ ., 
+#                        data = train_set, 
+#                        distribution = 'bernoulli', 
+#                        n.trees = best.iter, 
+#                        interaction.depth = 1,
+#                        shrinkage = 0.01)
+```
+
+And this is the performance of the tree
+
+```{r echo=FALSE}
+boost.probs = predict(best.boost.train, 
+                      validation_set,
+                      n.trees = best.iter, 
+                      type = "response")
+predob = prediction(boost.probs, validation_set$Transported)
+perf = performance(predob, "tpr", "fpr")
+plot(perf, main = "Boosting", colorize = TRUE)
+as.numeric(performance(predob, "auc")@y.values)
+```
+
+## SVM
+
+Support Vector Machine (SVMs) classifier for binary problems is a machine learning technique that separates the hyperplane built by the predictors in two 'parts' in order to have all the observations belonging to one class into the same part while all the others in the other part
+
+```{r include=FALSE}
+detach(package:imputeMissings,unload = T)
+library(e1071)
+```
+
+As all machine learning models we have a parameter to set in order to constrain flexibility and obtain the minimum test error possible.
+In this case, we have the `cost` parameter which controls the penalty of misclassification.
+In other words how many wrong observation we allow in order to avoid overfitting the data but also fitting it, so not underfitting the data.
+
+```{r}
+set.seed(1)
+# run 10-CV
+# linear_svm = tune(svm, Transported ~ ., data = train_set, 
+#                kernel = "linear", 
+#                scale = TRUE, 
+#                ranges = list(cost = c(0.1, 1, 5,6,7,8,9,10,11,12,13,14,15,20)))
+load(file='tune_out_linear.Rdata')
+tune.outL$best.model
+plot(tune.outL, main='error as a function of cost, linear svm')
+```
+
+As we can see from the chart and from the table above, the best SVM classifier is reached with the cost parameter = 6.
+Using this we can make predictions on the validation_set and plot the usual ROC curve and AUC.
+
+```{r echo=FALSE}
+library(ROCR)
+bestmod = tune.outL$best.model
+ypred_linear = predict(bestmod, validation_set, decision.values = TRUE)
+fitted_values_linear = attributes(ypred_linear)$decision.values
+
+predob = prediction(-fitted_values_linear, validation_set[, 'Transported'])
+perf = performance(predob, "tpr", "fpr")
+#plot(perf, main= 'Linear SVM with cost = 6')
+plot(perf, main= 'Linear SVM with cost = 6', colorize = TRUE)
+as.numeric(performance(predob, "auc")@y.values)
+
+# confusion matrix on the test set
+#table(truth = validation_set$Transported, predict = ypred_linear)
+```
+
+To account for non-linear boundaries we may try to use non-linear specifications of the SVM classifier.
+
+### Non linear Support Vector
+
+Specifically we have decided to use the radial kernel.In this case, SVM is not anymore a global method as the liner SVC was.
+Indeed we are classifying unknown observations with known observation that sit on the nearby in terms of predictor specifications.
+This classifier somehow recall of the KNN classifier, with the difference that we are creating boundaries within the dataset and not classifying observation per observation.
+
+```{r}
+set.seed(1)
+# cross-validating the tuning parameters gamma and lambda 
+# svm_non_linear = tune(svm, Transported ~ ., data = train_set,
+#                 kernel = "radial",
+#                 ranges = list(cost = c(0.1,1,5,10,15,10,25,30),
+#                               gamma = c(0.5, 1, 2, 3, 4)))
+load('svm_non_linear.Rdata')
+cat('Below there are the best parameters')
+svm_non_linear$best.parameters
+plot(svm_non_linear, main = 'Optimal parameters for non-linear radial SVM')
+```
+
+However we may notice that the best pick for cost and gamma are the lowest value they can possibly take, in this case cost = 0.1 and gamma = 0.5.
+However let's plot the ROC and calculate the AUC
+
+```{r echo=FALSE}
+best_mod_non_linear= svm_non_linear$best.model
+ypred_non_linear = predict(best_mod_non_linear, validation_set, decision.value=TRUE)
+summary(ypred_non_linear)
+fitted_values_non_linear = attributes(ypred_non_linear)$decision.values
+
+predob = prediction(-fitted_values_non_linear, validation_set[, 'Transported'])
+perf = performance(predob, "tpr", "fpr")
+plot(perf, main= 'Radial SVM with cost = 0.1 and gamma = 0.5', colorize = TRUE)
+as.numeric(performance(predob, "auc")@y.values)
+
+# confusion matrix on the test set
+#table(truth = validation_set$Transported, predict = ypred_non_linear)
+```
+
+## Neural Network
+
+In order to fit the Neural Network we need to use the function `neuralnet`, thus, since it works only with quantitative variables we need to convert factor variables into a numerical dummies performing a one-hot encoding of the datasets.
+
+Firstly, we create a dataframe containing the categorical variables, then we apply the function `dummyVars` that convert factors into numerical dummy variables that are stored in a new dataset.
+In order to avoid collinearity issues we delete one dummy for each categorical variables.
+Finally, we add back the numerical variables that are stored in the original dataset.
+
+The O-H encoding is performed in the following order: 1.
+`train_set`, 2.
+`validation_set` 3.
+`test_df`.
+
+```{r include=FALSE}
+df <- data.frame(
+  HomePlanet= train_set$HomePlanet,
+  CryoSleep = train_set$CryoSleep,
+    Destination = train_set$Destination,
+  VIP = train_set$VIP,
+  Transported = train_set$Transported,
+  deck = train_set$deck,
+  side = train_set$side,
+  number_within_group = train_set$number_within_group)
+
+dummy <- dummyVars(" ~ .", data=df)
+
+#perform one-hot encoding on data frame
+final_df <- data.frame(predict(dummy, newdata=df))
+
+
+# eliminate collinearity
+
+final_df$HomePlanet.Earth = NULL
+final_df$CryoSleep.False = NULL
+final_df$Destination.PSO.J318.5.22 = NULL
+final_df$VIP.False= NULL
+final_df$Transported.False=NULL
+final_df$deck.T= NULL
+final_df$side.P=NULL
+final_df$number_within_group.8=NULL
+
+# adding back numerical data
+
+final_df$Age = train_set$Age
+final_df$RoomService = train_set$RoomService
+final_df$FoodCourt = train_set$FoodCourt
+final_df$ShoppingMall=   train_set$ShoppingMall
+final_df$Spa = train_set$Spa
+final_df$VRDeck= train_set$VRDeck
+
+train_set_new= final_df
+
+rm(final_df)
+rm(df)
+
+```
+
+```{r include=FALSE}
+df <- data.frame(
+  HomePlanet= validation_set$HomePlanet,
+  CryoSleep = validation_set$CryoSleep,
+  Destination = validation_set$Destination,
+  VIP = validation_set$VIP,
+  Transported = validation_set$Transported,
+  deck = validation_set$deck,
+  side = validation_set$side,
+  number_within_group = validation_set$number_within_group)
+
+dummy <- dummyVars(" ~ .", data=df)
+
+#perform one-hot encoding on data frame
+final_df <- data.frame(predict(dummy, newdata=df))
+
+
+# eliminate collinearity
+
+final_df$HomePlanet.Earth = NULL
+final_df$CryoSleep.False = NULL
+final_df$Destination.PSO.J318.5.22 = NULL
+final_df$VIP.False= NULL
+final_df$Transported.False=NULL
+final_df$deck.T= NULL
+final_df$side.P=NULL
+final_df$number_within_group.8=NULL
+
+# add back numerical variables
+
+final_df$Age = validation_set$Age
+final_df$RoomService = validation_set$RoomService
+final_df$FoodCourt = validation_set$FoodCourt
+final_df$ShoppingMall=   validation_set$ShoppingMall
+final_df$Spa = validation_set$Spa
+final_df$VRDeck= validation_set$VRDeck
+
+
+validation_set_new= final_df
+rm(final_df)
+rm(df)
+
+```
+
+Using `neuralnet` we can fit the model using as covariates all the variables in the dataset, as shown by the formula `Transported.True ~.` within the model.
+Since we are facing a classification problem we want to minimize `ce`, the cross-entrophy, which is the negative of the log-likelihood and using the `logistic` function as activation function because the output should take the form of probabilites, thus they must lie in a range between [0,1].
+
+Given the huge number of the tuning parameters in this kind of models and the need to spend lot of computational power performing cross-validation to find the optimal combination, we decided to estimate just a one hidden-layer network.
+
+Selecting a single hidden-layer with 14 nodes we need to estimates a total of (27 + 1) x 14 = 392 parameters!
+This means that there is a tangible risk of over-fitting the data, which derives also form the huge variability of different combination of tuning parameters.
+
+```{r}
+library(neuralnet)
+
+set.seed(2020)
+nn1 = neuralnet(Transported ~.,                      
+                data = train_set_new,      
+                stepmax = 1e+7,                  
+                hidden = c(14),                   
+                algorithm = "rprop+",             
+                err.fct = "ce",                  
+                act.fct = "logistic",            
+                linear.output = FALSE,             
+                lifesign = 'full',               
+                lifesign.step = 1000,             
+                threshold = 1,                    
+                rep = 3)
+
+```
+
+```{r include=FALSE}
+# We use compute to determine the results of the neural network but the we need to detach 
+# and re-upload at need packages imputeMissings, ROCR and neuralnetbecause each of them mask
+# some of the others' functions.
+
+library(imputeMissings)
+detach(package:imputeMissings,unload = T)
+detach(package:ROCR,unload = T)
+
+library(neuralnet)
+prob1 = compute(nn1, validation_set_new, rep =1)
+prob2 = compute(nn1, validation_set_new, rep =2)
+prob3 = compute(nn1, validation_set_new, rep =3)
+prob1.result = prob1$net.result
+prob2.result = prob2$net.result
+prob3.result = prob3$net.result
+
+detach(package:neuralnet,unload = T)
+
+
+library(ROCR)
+nn1.pred1 = prediction(prob1.result, validation_set_new$Transported)
+nn1.pred2 = prediction(prob2.result, validation_set_new$Transported)
+nn1.pred3 = prediction(prob3.result, validation_set_new$Transported)
+
+pref1 = performance(nn1.pred1, "tpr", "fpr")
+pref2 = performance(nn1.pred2, "tpr", "fpr")
+pref3 = performance(nn1.pred3, "tpr", "fpr")
+
+```
+
+Here we can see the ROC curves and the performances for the Neural Networks
+
+```{r echo=FALSE}
+
+plot(pref1, main = "Neural Network rep=1", colorize = TRUE)
+plot(pref2, main = "Neural Network rep=2", colorize = TRUE)
+plot(pref3, main = "Neural Network rep=3", colorize = TRUE)
+
+
+cat("Neural Network rep = 1: ", as.numeric(performance(nn1.pred1, "auc")@y.values))
+cat("Neural Network rep = 2: ", as.numeric(performance(nn1.pred2, "auc")@y.values))
+cat("Neural Network rep = 3: ", as.numeric(performance(nn1.pred3, "auc")@y.values))
+```
+
+Let provide a graphical representation of the 1st network that is the best-performing model, with an AUC of 0.868.
+that show the resulting coefficients for each node connection.
+As it is possible to see form the graph, it is extremely hard understand the connection between the variables, and this together with the relative low prediction results led us to select other simple and less-computational expense models.
+
+```{r echo=FALSE}
+library(neuralnet)
+plot(nn1, rep=1)
+
+```
+
+# Conclusions
+
+```{r echo=FALSE}
+df = data.frame (
+  "Rank" = c("Boosting" ,
+             "Elastic net" ,
+             "Lasso" ,
+             "Logistic regression" ,
+             "Ridge",
+             "Neural net 1" ,
+             "Random forest m = 3" , 
+             "Linear SVM" ,
+             "Neural net 2" ,
+             "Random forest m = 2",
+             "Neural net 3" ,
+             "Bagging" ,
+             "Non-linear SVM"),
+  "AUC" = c(  0.8824744,
+            0.8765516,
+             0.876493,
+              0.8727135,
+           0.868471,
+             0.8681485,
+              0.8641943, 
+              0.8615537,
+              0.8591009,
+            0.8579669,
+              0.8576715,
+             0.8568759,
+             0.8518311))
+print(df)
+```
+
+Among all the methods we have used, the **boosting** turned out to be best performing in terms of AUC, with a value of 0.8824398, so we decided to use that model to get the prediction score of that model.
+
+```{r include=FALSE}
+boost.probs.kaggle = predict(best.boost.train, 
+                      test_df, 
+                      n.trees = 5690, 
+                      type = "response")
+
+boost.probs.kaggle <- ifelse(boost.probs.kaggle > 0.5, 'True', 'False')
+submission = read.csv('/Users/manuel/Desktop/Data Science for Economics and Finance/spaceship-titanic/submissions/submission.csv')
+submission$Transported = boost.probs.kaggle
+table(boost.probs.kaggle)
+#write.csv(submission, '/Users/manuel/Desktop/Data Science for Economics and Finance/spaceship-titanic/submissions/submission_boost.csv', row.names = FALSE)
+```
+
+For the boosting, kaggle.com results were 0.79448.
